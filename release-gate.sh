@@ -474,8 +474,13 @@ check_fpm_upload "${prev_upgrade_container}"
     || fail "startup did not fix the changeable directory around the root-owned file"
 docker logs "${prev_upgrade_container}" 2>&1 | grep -F "Left unchanged: " | grep -F "${root_owned_rel}" \
     || fail "startup did not log the root-owned file it could not change"
+# On a restart wordpress-setup, not the entrypoint, re-owns the WordPress root.
+docker exec "${prev_upgrade_container}" sh -c \
+    "touch '${wp_path}/wp-content/uploads/gate-restart-owner' && chown 0:0 '${wp_path}/wp-content/uploads/gate-restart-owner'"
 docker restart "${prev_upgrade_container}" >/dev/null
 wait_ready "${prev_upgrade_container}"
+[[ "$(docker exec "${prev_upgrade_container}" stat -c '%U:%G' "${wp_path}/wp-content/uploads/gate-restart-owner")" == "appbox:appbox" ]] \
+    || fail "restart did not re-own a root-owned file in public_html"
 echo "7.1.2-2 site upgraded and restarted with an unchangeable root-owned file in public_html"
 docker rm -f "${prev_upgrade_container}" >/dev/null
 

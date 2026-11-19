@@ -41,7 +41,9 @@ prepare_runtime() {
     cp /etc/nginx/fastcgi_params /home/appbox/config/nginx/fastcgi_params
 
     touch "${MYSQL_ERROR_LOG}"
-    fix_ownership /home/appbox /run/mysqld /run/php /var/lib/mysql-files
+    # wordpress-setup fixes the WordPress root itself, so that an install or
+    # upgrade walks a large site once, for ownership and modes together.
+    fix_ownership --skip "${CORE_PATH}" /home/appbox /run/mysqld /run/php /var/lib/mysql-files
     chmod 0775 /run/mysqld /run/php /home/appbox/mysql/run /var/lib/mysql-files
 }
 

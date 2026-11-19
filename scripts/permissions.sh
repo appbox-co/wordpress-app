@@ -33,12 +33,18 @@ log_permission_errors() {
     return 0
 }
 
-# Give the app user and group every path under the given roots that they do
-# not already own. Symlinks are re-owned themselves, not their targets.
+# fix_ownership [--skip PATH]... ROOT...
+# Give the app user and group every path under the roots that they do not
+# already own, except under a skipped PATH. Symlinks are re-owned themselves,
+# not their targets.
 fix_ownership() {
     local path started="${SECONDS}"
-    local roots=()
+    local roots=() skip=()
 
+    while [[ "${1:-}" == "--skip" ]]; do
+        skip+=(-path "$2" -prune -o)
+        shift 2
+    done
     for path in "$@"; do
         if [[ -e "${path}" ]]; then
             roots+=("${path}")
@@ -48,10 +54,14 @@ fix_ownership() {
         return 0
     fi
 
-    { find "${roots[@]}" \( ! -user "${PERMISSIONS_USER}" -o ! -group "${PERMISSIONS_GROUP}" \) \
+    { find "${roots[@]}" "${skip[@]}" \( ! -user "${PERMISSIONS_USER}" -o ! -group "${PERMISSIONS_GROUP}" \) \
         -exec chown -h "${PERMISSIONS_USER}:${PERMISSIONS_GROUP}" -- {} + 2>&1 >/dev/null || true; } \
         | log_permission_errors
-    if (( SECONDS - started >= 5 )); then
-        log "Ownership check of ${roots[*]} took $((SECONDS - started))s"
+    log_slow_walk "Ownership check of ${roots[*]}" "${started}"
+}
+
+log_slow_walk() {
+    if (( SECONDS - $2 >= 5 )); then
+        log "$1 took $((SECONDS - $2))s"
     fi
 }
