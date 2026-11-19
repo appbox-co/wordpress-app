@@ -18,6 +18,9 @@ log() {
     echo "[wordpress] $*"
 }
 
+# shellcheck source=scripts/permissions.sh
+source /usr/local/lib/wordpress/permissions.sh
+
 require_env() {
     local key="$1"
 
@@ -153,19 +156,25 @@ enable_core_auto_updates_by_default() {
 }
 
 set_permissions() {
-    chown -R "${APP_USER}:${APP_GROUP}" "${CORE_PATH}" /home/appbox/config /home/appbox/logs
+    local content="${CORE_PATH}/wp-content"
+
+    fix_ownership "${CORE_PATH}" /home/appbox/config /home/appbox/logs
     if [[ "$(stat -c '%u:%g' /home/appbox/mysql 2>/dev/null || true)" != "1000:1000" \
         || "$(stat -c '%u:%g' /home/appbox/mysql/data 2>/dev/null || true)" != "1000:1000" ]]; then
-        chown -R "${APP_USER}:${APP_GROUP}" /home/appbox/mysql
+        fix_ownership /home/appbox/mysql
     else
         chown "${APP_USER}:${APP_GROUP}" /home/appbox/mysql /home/appbox/mysql/data /home/appbox/mysql/run
     fi
-    find "${CORE_PATH}" -type d -exec chmod 0755 {} +
-    find "${CORE_PATH}" -type f -exec chmod 0644 {} +
-    if [[ -d "${CORE_PATH}/wp-content" ]]; then
-        find "${CORE_PATH}/wp-content" -type d -exec chmod 0775 {} +
-        find "${CORE_PATH}/wp-content" -type f -exec chmod 0664 {} +
-    fi
+    # Directories 0755 and files 0644, or 0775 and 0664 in wp-content. Only
+    # paths with another mode are changed; ones that cannot be are logged.
+    { find "${CORE_PATH}" \
+        \( -path "${content}" -o -path "${content}/*" \) \
+            \( -type d ! -perm 0775 -exec chmod 0775 -- {} + \
+            -o -type f ! -perm 0664 -exec chmod 0664 -- {} + \
+            -o -true \) \
+        -o -type d ! -perm 0755 -exec chmod 0755 -- {} + \
+        -o -type f ! -perm 0644 -exec chmod 0644 -- {} + \
+        2>&1 >/dev/null || true; } | log_permission_errors
 }
 
 wait_for_wordpress_cli() {
