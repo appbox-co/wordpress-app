@@ -3,12 +3,20 @@ set -Eeuo pipefail
 
 CORE_PATH="${WP_CORE_PATH:-/home/appbox/public_html}"
 MYSQL_SOCKET="/run/mysqld/mysqld.sock"
+MYSQL_ERROR_LOG="/home/appbox/logs/mysql/error.log"
+# Seconds to wait for mysqld to accept connections. While mysqld is alive and
+# running a server upgrade, the wait goes on up to MYSQL_UPGRADE_TIMEOUT.
+MYSQL_START_TIMEOUT="${MYSQL_START_TIMEOUT:-240}"
+MYSQL_UPGRADE_TIMEOUT="${MYSQL_UPGRADE_TIMEOUT:-3600}"
 CALLBACK_PENDING_FILE="/etc/appbox-wordpress-callback.pending"
 PIDS=()
 
 log() {
     echo "[entrypoint] $*"
 }
+
+# shellcheck source=scripts/permissions.sh
+source /usr/local/lib/wordpress/permissions.sh
 
 prepare_runtime() {
     mkdir -p \
@@ -32,8 +40,10 @@ prepare_runtime() {
     cp /usr/local/share/wordpress/mysqld.cnf /home/appbox/config/mysql/mysqld.cnf
     cp /etc/nginx/fastcgi_params /home/appbox/config/nginx/fastcgi_params
 
-    touch /home/appbox/logs/mysql/error.log
-    chown -R appbox:appbox /home/appbox /run/mysqld /run/php /var/lib/mysql-files
+    touch "${MYSQL_ERROR_LOG}"
+    # wordpress-setup fixes the WordPress root itself, so that an install or
+    # upgrade walks a large site once, for ownership and modes together.
+    fix_ownership --skip "${CORE_PATH}" /home/appbox /run/mysqld /run/php /var/lib/mysql-files
     chmod 0775 /run/mysqld /run/php /home/appbox/mysql/run /var/lib/mysql-files
 }
 
@@ -46,19 +56,75 @@ shutdown() {
     wait >/dev/null 2>&1 || true
 }
 
+mysql_ping() {
+    mysqladmin --protocol=socket --socket="${MYSQL_SOCKET}" --user=root --password="${MYSQL_ROOT_PASSWORD:-mysqlr00t}" ping >/dev/null 2>&1 \
+        || mysqladmin --protocol=socket --socket="${MYSQL_SOCKET}" --user=root ping >/dev/null 2>&1
+}
+
+process_alive() {
+    local stat
+
+    kill -0 "$1" 2>/dev/null || return 1
+    # An exited child that has not been reaped yet still answers kill -0.
+    read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
+    stat="${stat##*) }"
+    [[ "${stat%% *}" != "Z" ]]
+}
+
+# True while the mysqld that started writing to the error log at byte offset
+# $1 has begun an upgrade and not logged the end of its server upgrade. MySQL
+# logs "Data dictionary upgrading from version ..." (when the data dictionary
+# changes), then "Server upgrade from '80411' to '80413' started." and
+# "... completed.".
+mysql_upgrade_running() {
+    local new_log
+
+    new_log="$(tail -c "+$(($1 + 1))" "${MYSQL_ERROR_LOG}" 2>/dev/null)" || return 1
+    grep -Eq "Data dictionary upgrading from version|Server upgrade from '[0-9]+' to '[0-9]+' started" <<<"${new_log}" \
+        && ! grep -Eq "Server upgrade from '[0-9]+' to '[0-9]+' completed" <<<"${new_log}"
+}
+
+# Wait for mysqld (pid $1, error log offset $2) to accept connections, and
+# fail at once if it exits. After MYSQL_START_TIMEOUT seconds keep waiting only
+# while it is running a server upgrade, up to MYSQL_UPGRADE_TIMEOUT in all. The
+# first start after the image moves to a newer MySQL runs one, which took 4-6
+# minutes on loaded nodes; giving up then SIGTERMs mysqld, which finishes the
+# upgrade first, and the container restarts for nothing. When an upgrade ends
+# past the first timeout, mysqld gets MYSQL_START_TIMEOUT again to finish
+# starting.
 wait_for_mysql() {
-    for _ in $(seq 1 120); do
-        if mysqladmin --protocol=socket --socket="${MYSQL_SOCKET}" --user=root --password="${MYSQL_ROOT_PASSWORD:-mysqlr00t}" ping >/dev/null 2>&1; then
+    local mysqld_pid="$1" log_offset="$2" started="${SECONDS}"
+    local deadline=$((SECONDS + MYSQL_START_TIMEOUT)) upgrading=0
+
+    while true; do
+        if mysql_ping; then
             return 0
         fi
-        if mysqladmin --protocol=socket --socket="${MYSQL_SOCKET}" --user=root ping >/dev/null 2>&1; then
-            return 0
+        if ! process_alive "${mysqld_pid}"; then
+            echo "mysqld exited before accepting connections; see ${MYSQL_ERROR_LOG}" >&2
+            return 1
+        fi
+        if (( SECONDS >= deadline )); then
+            if mysql_upgrade_running "${log_offset}"; then
+                if (( SECONDS - started >= MYSQL_UPGRADE_TIMEOUT )); then
+                    echo "Timed out waiting for the MySQL server upgrade after $((SECONDS - started))s" >&2
+                    return 1
+                fi
+                if [[ "${upgrading}" == "0" ]]; then
+                    log "MySQL server upgrade still running after $((SECONDS - started))s; waiting up to ${MYSQL_UPGRADE_TIMEOUT}s while mysqld is alive"
+                    upgrading=1
+                fi
+            elif [[ "${upgrading}" == "1" ]]; then
+                log "MySQL server upgrade finished after $((SECONDS - started))s; waiting for mysqld to accept connections"
+                deadline=$((SECONDS + MYSQL_START_TIMEOUT))
+                upgrading=0
+            else
+                echo "Timed out waiting for MySQL after $((SECONDS - started))s" >&2
+                return 1
+            fi
         fi
         sleep 2
     done
-
-    echo "Timed out waiting for MySQL" >&2
-    return 1
 }
 
 start_mysql() {
@@ -98,11 +164,14 @@ start_mysql() {
             fi
         fi
     fi
-    chown -R appbox:appbox /home/appbox/mysql /run/mysqld
+    fix_ownership /home/appbox/mysql /run/mysqld
 
+    log_offset="$(stat -c %s "${MYSQL_ERROR_LOG}" 2>/dev/null || echo 0)"
     /usr/sbin/mysqld --defaults-file=/home/appbox/config/mysql/mysqld.cnf --verbose=0 --socket="${MYSQL_SOCKET}" &
-    PIDS+=("$!")
-    wait_for_mysql
+    mysqld_pid="$!"
+    PIDS+=("${mysqld_pid}")
+    wait_for_mysql "${mysqld_pid}" "${log_offset}"
+    log "MySQL is accepting connections"
 
     if mysql --protocol=socket --socket="${MYSQL_SOCKET}" --user=root -NBe "SELECT 1" >/dev/null 2>&1; then
         mysql --protocol=socket --socket="${MYSQL_SOCKET}" --user=root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD:-mysqlr00t}'; FLUSH PRIVILEGES;" >/dev/null 2>&1 \
