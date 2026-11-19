@@ -57,11 +57,11 @@ The script uses WP-CLI and requires the bundled MySQL service to be running.
 
 ## Build
 
-Builds and pushes for release run on the dedicated Appbox builder from an archive of the exact pushed Git commit. Build for `linux/amd64`, run `./release-gate.sh repo.cylo.net/wordpress:7.1.2-1` against the built image, then push the new tag.
+Builds and pushes for release run on the dedicated Appbox builder from an archive of the exact pushed Git commit. Build for `linux/amd64`, run `./release-gate.sh repo.cylo.net/wordpress:7.1.2-2` against the built image, then push the new tag.
 
 `PHP85_MIN_VERSION` in the Dockerfile is the oldest acceptable version of Ubuntu's php8.5 packages. Set it to the version from the Ubuntu security notice before a security release; the build fails while it is empty or apt cannot install that version, and the gate checks every php8.5 package in the image against it. `sources/mysqld.cnf` enables `mysql_native_password`, which MySQL 8.4 disables by default, so databases from older Appbox WordPress releases whose accounts still use it keep working.
 
-A trial build of unreleased changes is tagged `local/wordpress-trial:<tag>`, is never pushed, and is gated with `./release-gate.sh local/wordpress-trial:7.1.2-1 repo.cylo.net/wordpress:7.1.2-1`, which runs every check and confirms the release tag is still absent from the registry. Record the registry digest and add it to `appbox.yml` before a separate catalogue import.
+A trial build of unreleased changes is tagged `local/wordpress-trial:<tag>`, is never pushed, and is gated with `./release-gate.sh local/wordpress-trial:7.1.2-2 repo.cylo.net/wordpress:7.1.2-2`, which runs every check and confirms the release tag is still absent from the registry. Record the registry digest and add it to `appbox.yml` before a separate catalogue import.
 
 ## Appbox Import
 

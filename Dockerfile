@@ -1,11 +1,15 @@
 # Ubuntu 26.04, pinned by digest so the build is reproducible.
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 # Oldest acceptable version of Ubuntu's php8.5 packages. Set it to the version
 # from the Ubuntu security notice that fixes the PHP vulnerabilities being
 # released; the build fails if apt cannot install at least that version, and
 # the release gate checks the finished image against it. Empty fails the build.
 ARG PHP85_MIN_VERSION=8.5.4-0ubuntu1.5
+# Oldest acceptable Ubuntu nginx: 1.28.3-2ubuntu1.13 fixes CVE-2026-123007,
+# CVE-2026-123633, CVE-2026-118899 and the rest of the 18 November 2026 nginx
+# security release.
+ARG NGINX_MIN_VERSION=1.28.3-2ubuntu1.13
 ARG WORDPRESS_VERSION=7.1.2
 ARG WORDPRESS_TARBALL_MD5=b15c6a48881647462db57960a82419d2
 ARG WP_CLI_VERSION=2.12.0
@@ -24,7 +28,8 @@ ENV MYSQL_ROOT_PASSWORD=mysqlr00t \
     WP_NGINX_CONFIG=/usr/local/share/wordpress/wordpress.conf \
     MYSQL_DATA_TEMPLATE=
 
-LABEL net.cylo.wordpress.php85-min-version="${PHP85_MIN_VERSION}"
+LABEL net.cylo.wordpress.php85-min-version="${PHP85_MIN_VERSION}" \
+      net.cylo.wordpress.nginx-min-version="${NGINX_MIN_VERSION}"
 
 RUN set -eux; \
     existing_group="$(getent group 1000 | cut -d: -f1 || true)"; \
@@ -37,6 +42,7 @@ RUN set -eux; \
     printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; \
     chmod 0755 /usr/sbin/policy-rc.d; \
     apt-get update; \
+    apt-get upgrade -y --no-install-recommends -o Dpkg::Options::=--force-unsafe-io; \
     apt-get install -y --no-install-recommends -o Dpkg::Options::=--force-unsafe-io \
         ca-certificates \
         curl \
@@ -65,6 +71,10 @@ RUN set -eux; \
     php85_versions="$(dpkg-query -W -f='${db:Status-Abbrev}|${source:Package}|${Version}\n' | awk -F'|' '$1 ~ /^ii/ && $2 == "php8.5" {print $3}' | sort -u)"; \
     test "$(printf '%s\n' "${php85_versions}" | wc -l)" -eq 1; \
     dpkg --compare-versions "${php85_versions}" ge "${PHP85_MIN_VERSION}"; \
+    test -n "${NGINX_MIN_VERSION}"; \
+    nginx_versions="$(dpkg-query -W -f='${db:Status-Abbrev}|${source:Package}|${Version}\n' | awk -F'|' '$1 ~ /^ii/ && $2 == "nginx" {print $3}' | sort -u)"; \
+    test "$(printf '%s\n' "${nginx_versions}" | wc -l)" -eq 1; \
+    dpkg --compare-versions "${nginx_versions}" ge "${NGINX_MIN_VERSION}"; \
     rm -f /usr/sbin/policy-rc.d; \
     rm -rf /var/lib/apt/lists/*
 

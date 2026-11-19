@@ -1,10 +1,10 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-release_ref="repo.cylo.net/wordpress:7.1.2-1"
+release_ref="repo.cylo.net/wordpress:7.1.2-2"
 usage() {
     echo "Usage: release-gate.sh ${release_ref}" >&2
-    echo "       release-gate.sh local/wordpress-trial:7.1.2-1 ${release_ref}   (trial build, never pushed)" >&2
+    echo "       release-gate.sh local/wordpress-trial:7.1.2-2 ${release_ref}   (trial build, never pushed)" >&2
     exit 2
 }
 case $# in
@@ -16,10 +16,10 @@ esac
 image_ref="$1"
 gate_dir="$(cd "$(dirname "$0")" && pwd)"
 baseline_ref="repo.cylo.net/wordpress@sha256:f40b3d3637e5457fdb5f2acce820da5106c230ee9280749bd6bac564031fe79d"
-# The deployed 7.1.2 image that 7.1.2-1 replaces; the PHP module lists must match it.
-deployed_ref="repo.cylo.net/wordpress@sha256:5331635e2be71a41ff2186a6f99fcc5dc560d344d324c1e68b5ac83280bd2928"
+# The deployed 7.1.2-1 image that 7.1.2-2 replaces; the PHP module lists must match it.
+deployed_ref="repo.cylo.net/wordpress@sha256:5130fbc96f7684c0a704fecfd60cab91263a5309e67c08fbea28816740938a6d"
 # The mutable wordpress:latest line (catalogue version latest-4) that the
-# release moves onto 7.1.2-1. Only its current Ubuntu 24.04 / PHP 8.3 build
+# release moves onto 7.1.2-2. Only its current Ubuntu 24.04 / PHP 8.3 build
 # is still in the registry. The Ubuntu 20.04 / PHP 7.4 build that 17 live
 # instances run (sha256:dcd14f5eb6ac90fed9d14b44856329af8eb3797c9f606c25a604b31c62bfa17b)
 # returns MANIFEST_UNKNOWN from repo.cylo.net and the node repo caches, so
@@ -39,11 +39,14 @@ legacy_container="wp-gate-legacy-${gate_suffix}"
 upgrade_container="wp-gate-upgrade-${gate_suffix}"
 noble_container="wp-gate-noble-${gate_suffix}"
 noble_upgrade_container="wp-gate-noble-upgrade-${gate_suffix}"
+prev_container="wp-gate-prev-${gate_suffix}"
+prev_upgrade_container="wp-gate-prev-upgrade-${gate_suffix}"
 test_password="$(openssl rand -base64 30)"
 
 cleanup() {
     docker rm -f "${fresh_container}" "${legacy_container}" "${upgrade_container}" \
-        "${noble_container}" "${noble_upgrade_container}" >/dev/null 2>&1 || true
+        "${noble_container}" "${noble_upgrade_container}" \
+        "${prev_container}" "${prev_upgrade_container}" >/dev/null 2>&1 || true
     if [[ "${gate_root}" =~ ^/home/appbox/builds/wordpress-gate\.[A-Za-z0-9]{6}$ ]]; then
         docker run --rm --platform linux/amd64 --entrypoint sh \
             -v "${gate_root}:/gate" "${image_ref}" \
@@ -198,7 +201,7 @@ legacy_upgrade() {
     docker restart "${upgrade_c}" >/dev/null
     wait_ready "${upgrade_c}"
     docker rm -f "${upgrade_c}" >/dev/null
-    echo "${label}: upgraded to 7.1.2-1 with content, uploads, salts and the root login kept"
+    echo "${label}: upgraded to ${release_ref##*:} with content, uploads, salts and the root login kept"
 }
 
 echo "== Mode: ${mode} (${image_ref}, release tag ${release_ref})"
@@ -225,7 +228,20 @@ docker run --rm --network none --entrypoint php-fpm8.5 "${image_ref}" -v | head 
 docker run --rm --network none --entrypoint php-fpm8.5 "${image_ref}" -t \
     || fail "php-fpm8.5 configuration test failed"
 
-echo "== PHP modules match the deployed 7.1.2 image"
+echo "== nginx packages"
+nginx_min="$(docker image inspect --format '{{index .Config.Labels "net.cylo.wordpress.nginx-min-version"}}' "${image_ref}")"
+dockerfile_nginx_min="$(sed -n 's/^ARG NGINX_MIN_VERSION=//p' "${gate_dir}/Dockerfile")"
+[[ -n "${nginx_min}" ]] || fail "image was built without NGINX_MIN_VERSION"
+if [[ "${mode}" == release ]]; then
+    [[ "${nginx_min}" == "${dockerfile_nginx_min}" ]] \
+        || fail "image was built with NGINX_MIN_VERSION=${nginx_min}, but the Dockerfile pins '${dockerfile_nginx_min}'"
+fi
+docker run --rm --network none -v "${gate_dir}/release:/release:ro" --entrypoint sh "${image_ref}" \
+    /release/check-php-packages.sh nginx "${nginx_min}" \
+    || fail "nginx packages are not all at ${nginx_min} or newer"
+docker run --rm --network none --entrypoint nginx "${image_ref}" -v
+
+echo "== PHP modules match the deployed 7.1.2-1 image"
 docker pull --platform linux/amd64 "${deployed_ref}" >/dev/null
 for sapi in php php-fpm8.5; do
     deployed_modules="$(docker run --rm --network none --entrypoint "${sapi}" "${deployed_ref}" -m)" \
@@ -235,9 +251,9 @@ for sapi in php php-fpm8.5; do
     [[ -n "${deployed_modules}" ]] || fail "${deployed_ref} reported no ${sapi} modules"
     if [[ "${deployed_modules}" != "${release_modules}" ]]; then
         diff <(printf '%s\n' "${deployed_modules}") <(printf '%s\n' "${release_modules}") >&2 || true
-        fail "${sapi} module list differs from the deployed 7.1.2 image"
+        fail "${sapi} module list differs from the deployed 7.1.2-1 image"
     fi
-    echo "${sapi}: $(printf '%s\n' "${release_modules}" | grep -cv -e '^\[' -e '^$') modules, identical to 7.1.2"
+    echo "${sapi}: $(printf '%s\n' "${release_modules}" | grep -cv -e '^\[' -e '^$') modules, identical to 7.1.2-1"
 done
 
 echo "== Multipart upload (built-in server)"
@@ -318,6 +334,23 @@ echo "== Upgrade from the legacy wordpress:latest image (latest-4, Ubuntu 24.04)
 echo "NOT COVERED: the Ubuntu 20.04 / PHP 7.4 latest-4 image is no longer in the registry"
 legacy_upgrade noble "${legacy_noble_ref}" "${noble_container}" "${noble_upgrade_container}"
 
+echo "== Upgrade from the deployed 7.1.2-1 image"
+launch "${prev_container}" "${gate_root}/prev" "${deployed_ref}"
+docker exec "${prev_container}" mkdir -p "${wp_path}/wp-content/uploads"
+docker exec "${prev_container}" touch "${wp_path}/wp-content/uploads/release-gate-marker"
+prev_salt_hash="$(docker exec "${prev_container}" wp --allow-root --path="${wp_path}" \
+    config get AUTH_KEY | sha256sum | cut -d' ' -f1)"
+docker rm -f "${prev_container}" >/dev/null
+launch "${prev_upgrade_container}" "${gate_root}/prev" "${image_ref}"
+check_core_updates "${prev_upgrade_container}" 7.1.2
+check_fpm_upload "${prev_upgrade_container}"
+[[ -f "${gate_root}/prev/public_html/wp-content/uploads/release-gate-marker" ]] \
+    || fail "7.1.2-1 site content was not preserved"
+[[ "$(docker exec "${prev_upgrade_container}" wp --allow-root --path="${wp_path}" \
+    config get AUTH_KEY | sha256sum | cut -d' ' -f1)" == "${prev_salt_hash}" ]] \
+    || fail "7.1.2-1 authentication salts changed"
+docker rm -f "${prev_upgrade_container}" >/dev/null
+
 echo "== Registry tag must not exist"
 # A 404 from the authenticated registry API proves the exact tag is unused.
 python3 - "${release_ref}" <<'PY'
@@ -333,7 +366,7 @@ try:
     if not auth:
         raise ValueError('empty registry authentication')
     request = urllib.request.Request(
-        'https://repo.cylo.net/v2/wordpress/manifests/7.1.2-1',
+        'https://repo.cylo.net/v2/wordpress/manifests/' + sys.argv[1].rsplit(':', 1)[1],
         headers={
             'Authorization': 'Basic ' + auth,
             'Accept': ','.join((
@@ -356,7 +389,7 @@ except Exception as error:
     print(f'Registry precondition failed: {error}', file=sys.stderr)
     sys.exit(1)
 
-print('Authenticated registry confirms repo.cylo.net/wordpress:7.1.2-1 is not in the registry yet')
+print(f'Authenticated registry confirms {sys.argv[1]} is not in the registry yet')
 PY
 
-echo "PASS (${mode}): WordPress 7.1.2-1 release gate passed for ${image_ref}"
+echo "PASS (${mode}): WordPress ${release_ref##*:} release gate passed for ${image_ref}"

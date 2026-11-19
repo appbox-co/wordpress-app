@@ -1,5 +1,6 @@
 #!/bin/sh
-# Usage: check-php-packages.sh <php source package> <minimum version>
+# Usage: check-php-packages.sh <source package> <minimum version>
+# The source package is php<major>.<minor> or nginx.
 #
 # Exits 0 only when every installed binary package built from the given
 # Ubuntu source package (for example php8.3) is at one single version and
@@ -14,7 +15,7 @@ fi
 source_pkg=$1
 min_version=$2
 case "$source_pkg" in
-    php[0-9].[0-9]) ;;
+    php[0-9].[0-9]|nginx) ;;
     *) echo "unexpected source package name: $source_pkg" >&2; exit 2 ;;
 esac
 case "$min_version" in
