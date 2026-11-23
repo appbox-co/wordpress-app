@@ -112,13 +112,14 @@ COPY sources/php-fpm.conf /usr/local/share/wordpress/php-fpm.conf
 COPY sources/www.conf /usr/local/share/wordpress/www.conf
 COPY sources/mysqld.cnf /usr/local/share/wordpress/mysqld.cnf
 COPY scripts/sync-wordpress-core.sh /usr/local/bin/sync-wordpress-core
+COPY scripts/permissions.sh /usr/local/lib/wordpress/permissions.sh
 COPY scripts/30_wordpress.sh /usr/local/bin/wordpress-setup
 COPY entrypoint.sh /entrypoint.sh
 COPY moduser.sh /moduser.sh
 COPY sendmail /usr/sbin/sendmail
 
 RUN set -eux; \
-    chmod 0644 /usr/local/share/wordpress/*; \
+    chmod 0644 /usr/local/share/wordpress/* /usr/local/lib/wordpress/permissions.sh; \
     chmod 0755 /usr/local/bin/sync-wordpress-core /usr/local/bin/wordpress-setup /entrypoint.sh /moduser.sh /usr/sbin/sendmail; \
     mkdir -p /home/appbox/public_html /home/appbox/mysql/data /home/appbox/mysql/run /home/appbox/config /home/appbox/logs /run/mysqld /run/php /var/lib/mysql-files; \
     chown -R appbox:appbox /home/appbox /run/mysqld /run/php /var/lib/mysql-files

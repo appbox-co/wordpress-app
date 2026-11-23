@@ -18,6 +18,9 @@ log() {
     echo "[wordpress] $*"
 }
 
+# shellcheck source=scripts/permissions.sh
+source /usr/local/lib/wordpress/permissions.sh
+
 require_env() {
     local key="$1"
 
@@ -152,19 +155,34 @@ enable_core_auto_updates_by_default() {
     fi
 }
 
+# Re-own paths under the WordPress root that the app user does not own, and
+# set directories to 0755 and files to 0644 (0775 and 0664 in wp-content), in
+# one walk: walking a large site is slow on some storage. Only paths that are
+# wrong are changed; ones that cannot be are logged.
+fix_core_permissions() {
+    local content="${CORE_PATH}/wp-content" started="${SECONDS}"
+
+    { find "${CORE_PATH}" \
+        \( ! -user "${APP_USER}" -o ! -group "${APP_GROUP}" \) \
+            -exec chown -h "${APP_USER}:${APP_GROUP}" -- {} + -false \
+        -o \( -path "${content}" -o -path "${content}/*" \) \
+            \( -type d ! -perm 0775 -exec chmod 0775 -- {} + \
+            -o -type f ! -perm 0664 -exec chmod 0664 -- {} + \
+            -o -true \) \
+        -o -type d ! -perm 0755 -exec chmod 0755 -- {} + \
+        -o -type f ! -perm 0644 -exec chmod 0644 -- {} + \
+        2>&1 >/dev/null || true; } | log_permission_errors
+    log_slow_walk "Ownership and mode check of ${CORE_PATH}" "${started}"
+}
+
 set_permissions() {
-    chown -R "${APP_USER}:${APP_GROUP}" "${CORE_PATH}" /home/appbox/config /home/appbox/logs
+    fix_core_permissions
+    fix_ownership /home/appbox/config /home/appbox/logs
     if [[ "$(stat -c '%u:%g' /home/appbox/mysql 2>/dev/null || true)" != "1000:1000" \
         || "$(stat -c '%u:%g' /home/appbox/mysql/data 2>/dev/null || true)" != "1000:1000" ]]; then
-        chown -R "${APP_USER}:${APP_GROUP}" /home/appbox/mysql
+        fix_ownership /home/appbox/mysql
     else
         chown "${APP_USER}:${APP_GROUP}" /home/appbox/mysql /home/appbox/mysql/data /home/appbox/mysql/run
-    fi
-    find "${CORE_PATH}" -type d -exec chmod 0755 {} +
-    find "${CORE_PATH}" -type f -exec chmod 0644 {} +
-    if [[ -d "${CORE_PATH}/wp-content" ]]; then
-        find "${CORE_PATH}/wp-content" -type d -exec chmod 0775 {} +
-        find "${CORE_PATH}/wp-content" -type f -exec chmod 0664 {} +
     fi
 }
 
@@ -239,6 +257,7 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
     touch "${CONFIG_FLAG}"
 else
     log "Configured container restart detected; preserving existing WordPress salts and data"
+    fix_ownership "${CORE_PATH}"
 fi
 
 safe_rm_stale_mysql_files
