@@ -10,9 +10,9 @@ app:
 
 image:
   name: "repo.cylo.net/wordpress"
-  version: "7.1.2-2"
-  tag: "7.1.2-2"
-  digest: "repo.cylo.net/wordpress@sha256:1453be2f375879c4342edbfc88644f643dcc4095229d221e00f508fc4cf30923"
+  version: "7.1.2-3"
+  tag: "7.1.2-3"
+  digest: "repo.cylo.net/wordpress@sha256:f103a80328507a15f41c85dba17d5e479c729afa5399a654c9f9d2fbd35c67f7"
 
 container:
   cmd: null
