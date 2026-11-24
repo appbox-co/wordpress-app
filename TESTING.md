@@ -1,13 +1,13 @@
-# WordPress 7.1.2-3 Test Plan
+# WordPress 7.1.2-4 Test Plan
 
-All release builds and Docker compatibility tests must run on the dedicated Appbox builder. Run `./release-gate.sh repo.cylo.net/wordpress:7.1.2-3` after building and before pushing. Besides a fresh install, restart and the 7.0.2 upgrade, the gate checks the php8.5 and nginx package floors, that the `php` and `php-fpm8.5` module lists are identical to the deployed 7.1.2-2 image, an upgrade from 7.1.2-2 with a root-owned file in `public_html` that the container cannot change (the site must still start and restart, and the file is logged), a MySQL server upgrade that outlasts `MYSQL_START_TIMEOUT` (the container must keep waiting, not restart), that the container stops at once if mysqld exits and stops at `MYSQL_UPGRADE_TIMEOUT` if the upgrade never ends, that real MySQL logs the upgrade messages the entrypoint waits on, the runtime php-fpm and nginx configuration tests, a multipart upload through the built-in server and through nginx and PHP-FPM, and an upgrade from the legacy `wordpress:latest` image (Ubuntu 24.04 / PHP 8.3, MySQL 8.0) with a root account on `mysql_native_password`. That fixture installs MySQL with apt on first start, so the gate needs network access. The Ubuntu 20.04 / PHP 7.4 `wordpress:latest` build that older sites still run is no longer in the registry, so the gate does not cover upgrades from it; canary those sites individually with backups.
+All release builds and Docker compatibility tests must run on the dedicated Appbox builder. Run `./release-gate.sh repo.cylo.net/wordpress:7.1.2-4` after building and before pushing. Besides a fresh install, restart and the 7.0.2 upgrade, the gate checks the php8.5 and nginx package floors, that the `php` and `php-fpm8.5` module lists are identical to the deployed 7.1.2-2 image, an upgrade from 7.1.2-2 with a root-owned file in `public_html` that the container cannot change (the site must still start and restart, and the file is logged), a MySQL server upgrade that outlasts `MYSQL_START_TIMEOUT` (the container must keep waiting, not restart), that the container stops at once if mysqld exits and stops at `MYSQL_UPGRADE_TIMEOUT` if the upgrade never ends, that real MySQL logs the upgrade messages the entrypoint waits on, that nothing in `public_html` is left owned by root after an install or upgrade (setup runs wp-cli as root, and WordPress creates folders as it runs) and that WordPress can save an upload as the app user, the runtime php-fpm and nginx configuration tests, a multipart upload through the built-in server and through nginx and PHP-FPM, and an upgrade from the legacy `wordpress:latest` image (Ubuntu 24.04 / PHP 8.3, MySQL 8.0) with a root account on `mysql_native_password`. That fixture installs MySQL with apt on first start, so the gate needs network access. The Ubuntu 20.04 / PHP 7.4 `wordpress:latest` build that older sites still run is no longer in the registry, so the gate does not cover upgrades from it; canary those sites individually with backups.
 
 ## Fresh Install
 
 Build the image:
 
 ```bash
-docker build --platform linux/amd64 -t repo.cylo.net/wordpress:7.1.2-3 .
+docker build --platform linux/amd64 -t repo.cylo.net/wordpress:7.1.2-4 .
 ```
 
 Run a fresh install with persistent directories:
@@ -30,7 +30,7 @@ docker run -d --name wordpress-fresh \
   -v /home/appbox/testdata/wordpress-fresh/mysql_data:/home/appbox/mysql \
   -v /home/appbox/testdata/wordpress-fresh/logs:/home/appbox/logs \
   -v /home/appbox/testdata/wordpress-fresh/config:/home/appbox/config \
-  repo.cylo.net/wordpress:7.1.2-3
+  repo.cylo.net/wordpress:7.1.2-4
 ```
 
 Verify:
@@ -77,7 +77,7 @@ docker run -d --name wordpress-upgrade \
   -v /home/appbox/testdata/wordpress-upgrade/mysql_data:/home/appbox/mysql \
   -v /home/appbox/testdata/wordpress-upgrade/logs:/home/appbox/logs \
   -v /home/appbox/testdata/wordpress-upgrade/config:/home/appbox/config \
-  repo.cylo.net/wordpress:7.1.2-3
+  repo.cylo.net/wordpress:7.1.2-4
 ```
 
 Verify:
@@ -108,6 +108,6 @@ Before importing into app ID 87:
 
 1. Run the Cylo API importer with `--dry-run`.
 2. Confirm no validation errors.
-3. Confirm the pushed `repo.cylo.net/wordpress:7.1.2-3` manifest has a `linux/amd64` digest and add the immutable index digest to `appbox.yml`.
+3. Confirm the pushed `repo.cylo.net/wordpress:7.1.2-4` manifest has a `linux/amd64` digest and add the immutable index digest to `appbox.yml`.
 4. Agree the catalogue default separately from image publication, then import through the supported importer.
 5. Re-query `app_versions`, `apps`, and `appinstance` to confirm only the authorised catalogue and instance changes occurred.

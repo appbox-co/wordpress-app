@@ -175,6 +175,11 @@ fix_core_permissions() {
     log_slow_walk "Ownership and mode check of ${CORE_PATH}" "${started}"
 }
 
+# Run after the last wp_cli call of an install or upgrade. wp-cli runs as root,
+# and WordPress creates files as it runs: core install creates
+# wp-content/uploads/YYYY/MM, and plugins can create files whenever WordPress
+# loads. Fixing permissions before those calls left them owned by root, so
+# media uploads failed until the next restart.
 set_permissions() {
     fix_core_permissions
     fix_ownership /home/appbox/config /home/appbox/logs
@@ -209,7 +214,6 @@ fresh_install() {
     seed_wordpress_files
     sync_wordpress_core_files
     configure_fresh_wp_config
-    set_permissions
 
     start_mysql_for_setup
 
@@ -227,17 +231,18 @@ fresh_install() {
 
     wp_cli core update-db
     enable_core_auto_updates_by_default
+    set_permissions
     rm -f "${FRESH_INSTALL_FLAG}"
 }
 
 upgrade_install() {
     log "Upgrade detected; preserving existing WordPress files and database"
     sync_wordpress_core_files
-    set_permissions
     start_mysql_for_setup
     wait_for_wordpress_cli
     wp_cli core update-db
     enable_core_auto_updates_by_default
+    set_permissions
 }
 
 install_nginx_config
