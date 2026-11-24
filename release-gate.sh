@@ -484,16 +484,18 @@ docker exec "${prev_container}" touch "${wp_path}/wp-content/uploads/release-gat
 prev_salt_hash="$(docker exec "${prev_container}" wp --allow-root --path="${wp_path}" \
     config get AUTH_KEY | sha256sum | cut -d' ' -f1)"
 docker rm -f "${prev_container}" >/dev/null
-# Stands in for plugins that create files whenever WordPress loads. Setup's
-# wp-cli calls run as root, so the folder it creates must end up owned by the
-# app user too. It is written without loading WordPress, so only the release
-# image's setup can create the folder.
+# Stands in for plugins that create files when WordPress loads. Setup's
+# wp-cli calls run as root, so the folder this one creates must end up owned
+# by the app user too. Only `wp core update-db` creates it: setup runs that,
+# and the gate never does, so the gate's own wp-cli calls as root, which poll
+# while setup runs, cannot create it first. It is written without loading
+# WordPress.
 wp_cli_created_rel="wp-content/uploads/gate-created-by-wp-cli"
 docker run --rm -i --platform linux/amd64 --network none --entrypoint sh \
     -v "${gate_root}/prev/public_html:/site" "${image_ref}" \
     -c 'mkdir -p /site/wp-content/mu-plugins && cat > /site/wp-content/mu-plugins/gate-created-by-wp-cli.php' <<'PHP'
 <?php
-if (defined('WP_CLI') && WP_CLI) {
+if (defined('WP_CLI') && WP_CLI && in_array('update-db', $GLOBALS['argv'] ?? [], true)) {
     wp_mkdir_p(WP_CONTENT_DIR . '/uploads/gate-created-by-wp-cli');
 }
 PHP
@@ -524,7 +526,7 @@ check_fpm_upload "${prev_upgrade_container}"
 docker logs "${prev_upgrade_container}" 2>&1 | grep -F "Left unchanged: " | grep -F "${root_owned_rel}" \
     || fail "startup did not log the root-owned file it could not change"
 docker exec "${prev_upgrade_container}" test -d "${wp_path}/${wp_cli_created_rel}" \
-    || fail "setup's wp-cli calls did not load the must-use plugin fixture"
+    || fail "setup's wp core update-db did not load the must-use plugin fixture"
 check_owned_by_app_user "${prev_upgrade_container}" "${root_owned_rel}"
 check_app_user_upload "${prev_upgrade_container}"
 # On a restart wordpress-setup, not the entrypoint, re-owns the WordPress root.
