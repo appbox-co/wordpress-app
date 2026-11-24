@@ -1,10 +1,10 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-release_ref="repo.cylo.net/wordpress:7.1.2-3"
+release_ref="repo.cylo.net/wordpress:7.1.2-4"
 usage() {
     echo "Usage: release-gate.sh ${release_ref}" >&2
-    echo "       release-gate.sh local/wordpress-trial:7.1.2-3 ${release_ref}   (trial build, never pushed)" >&2
+    echo "       release-gate.sh local/wordpress-trial:7.1.2-4 ${release_ref}   (trial build, never pushed)" >&2
     exit 2
 }
 case $# in
@@ -16,10 +16,10 @@ esac
 image_ref="$1"
 gate_dir="$(cd "$(dirname "$0")" && pwd)"
 baseline_ref="repo.cylo.net/wordpress@sha256:f40b3d3637e5457fdb5f2acce820da5106c230ee9280749bd6bac564031fe79d"
-# The deployed 7.1.2-2 image that 7.1.2-3 replaces; the PHP module lists must match it.
+# The deployed 7.1.2-2 image that 7.1.2-4 replaces; the PHP module lists must match it.
 deployed_ref="repo.cylo.net/wordpress@sha256:1453be2f375879c4342edbfc88644f643dcc4095229d221e00f508fc4cf30923"
 # The mutable wordpress:latest line (catalogue version latest-4) that the
-# release moves onto 7.1.2-3. Only its current Ubuntu 24.04 / PHP 8.3 build
+# release moves onto 7.1.2-4. Only its current Ubuntu 24.04 / PHP 8.3 build
 # is still in the registry. The Ubuntu 20.04 / PHP 7.4 build that 17 live
 # instances run (sha256:dcd14f5eb6ac90fed9d14b44856329af8eb3797c9f606c25a604b31c62bfa17b)
 # returns MANIFEST_UNKNOWN from repo.cylo.net and the node repo caches, so
@@ -194,6 +194,34 @@ PHP
         || fail "${container}: multipart upload through nginx and PHP-FPM returned '${result}', expected '1:5:b'"
 }
 
+# Nothing under the WordPress root may be left to another owner than the app
+# user that PHP-FPM runs as. Setup runs wp-cli as root, and a fresh install
+# used to leave the wp-content/uploads/YYYY/MM folder that core install creates
+# owned by root, so media uploads failed until the next restart. $2, if given,
+# is a path under the root that is expected to keep another owner.
+check_owned_by_app_user() {
+    local container="$1" wrong prune=()
+
+    [[ -z "${2:-}" ]] || prune=(-path "${wp_path}/$2" -prune -o)
+    wrong="$(docker exec "${container}" find "${wp_path}" "${prune[@]}" \
+        \( ! -user appbox -o ! -group appbox \) -printf '%u:%g %p\n')" \
+        || fail "${container}: could not check owners under ${wp_path}"
+    if [[ -n "${wrong}" ]]; then
+        printf '%s\n' "${wrong}" | head -20 >&2
+        fail "${container}: $(wc -l <<<"${wrong}") paths under ${wp_path} are not owned by appbox:appbox"
+    fi
+}
+
+# Save a file into this month's uploads folder through WordPress as the app
+# user, as a media upload from the dashboard does.
+check_app_user_upload() {
+    local container="$1"
+
+    docker exec -u 1000 "${container}" wp --path="${wp_path}" --skip-plugins --skip-themes eval \
+        '$r = wp_upload_bits("appbox-gate-upload.txt", null, "gate"); if ($r["error"]) { fwrite(STDERR, $r["error"] . "\n"); exit(1); } unlink($r["file"]);' \
+        || fail "${container}: WordPress cannot save an upload as the app user"
+}
+
 # Install a site with a legacy wordpress:latest image, add content, switch
 # its root account to mysql_native_password, then start the release image on
 # the same volumes, as `apps update` does. The legacy images install MySQL 8.0
@@ -268,6 +296,8 @@ legacy_upgrade() {
     docker exec "${upgrade_c}" mysql --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -pmysqlr00t -NBe 'SELECT VERSION()' 2>/dev/null \
         | grep -q '^8\.4\.' || fail "${label}: MySQL was not upgraded to 8.4"
     check_fpm_upload "${upgrade_c}"
+    check_owned_by_app_user "${upgrade_c}"
+    check_app_user_upload "${upgrade_c}"
     docker restart "${upgrade_c}" >/dev/null
     wait_ready "${upgrade_c}"
     docker rm -f "${upgrade_c}" >/dev/null
@@ -374,11 +404,16 @@ docker exec "${fresh_container}" php-fpm8.5 -t --fpm-config /home/appbox/config/
 docker exec "${fresh_container}" nginx -t -c /home/appbox/config/nginx/nginx.conf \
     || fail "nginx runtime configuration test failed"
 check_fpm_upload "${fresh_container}"
+[[ -n "$(docker exec "${fresh_container}" find "${wp_path}/wp-content/uploads" -mindepth 2 -maxdepth 2 -type d)" ]] \
+    || fail "core install no longer creates an uploads folder; the ownership check below would not cover it"
+check_owned_by_app_user "${fresh_container}"
+check_app_user_upload "${fresh_container}"
 fresh_config_hash="$(docker exec "${fresh_container}" sha256sum "${wp_path}/wp-config.php" | cut -d' ' -f1)"
 docker restart "${fresh_container}" >/dev/null
 wait_ready "${fresh_container}"
 [[ "$(docker exec "${fresh_container}" sha256sum "${wp_path}/wp-config.php" | cut -d' ' -f1)" == "${fresh_config_hash}" ]] \
     || fail "restart changed WordPress configuration or salts"
+check_owned_by_app_user "${fresh_container}"
 docker rm -f "${fresh_container}" >/dev/null
 
 # A MySQL minor-version bump makes the first start run a server upgrade, which
@@ -434,7 +469,8 @@ check_core_updates "${upgrade_container}" 7.1.2
 [[ "$(docker exec "${upgrade_container}" wp --allow-root --path="${wp_path}" \
     config get AUTH_KEY | sha256sum | cut -d' ' -f1)" == "${legacy_salt_hash}" ]] \
     || fail "legacy authentication salts changed"
-
+check_owned_by_app_user "${upgrade_container}"
+check_app_user_upload "${upgrade_container}"
 docker rm -f "${upgrade_container}" >/dev/null
 
 echo "== Upgrade from the legacy wordpress:latest image (latest-4, Ubuntu 24.04)"
@@ -448,6 +484,21 @@ docker exec "${prev_container}" touch "${wp_path}/wp-content/uploads/release-gat
 prev_salt_hash="$(docker exec "${prev_container}" wp --allow-root --path="${wp_path}" \
     config get AUTH_KEY | sha256sum | cut -d' ' -f1)"
 docker rm -f "${prev_container}" >/dev/null
+# Stands in for plugins that create files when WordPress loads. Setup's
+# wp-cli calls run as root, so the folder this one creates must end up owned
+# by the app user too. Only `wp core update-db` creates it: setup runs that,
+# and the gate never does, so the gate's own wp-cli calls as root, which poll
+# while setup runs, cannot create it first. It is written without loading
+# WordPress.
+wp_cli_created_rel="wp-content/uploads/gate-created-by-wp-cli"
+docker run --rm -i --platform linux/amd64 --network none --entrypoint sh \
+    -v "${gate_root}/prev/public_html:/site" "${image_ref}" \
+    -c 'mkdir -p /site/wp-content/mu-plugins && cat > /site/wp-content/mu-plugins/gate-created-by-wp-cli.php' <<'PHP'
+<?php
+if (defined('WP_CLI') && WP_CLI && in_array('update-db', $GLOBALS['argv'] ?? [], true)) {
+    wp_mkdir_p(WP_CONTENT_DIR . '/uploads/gate-created-by-wp-cli');
+}
+PHP
 # In production, files owned by root on the host sit outside the container's
 # user namespace, so its chown and chmod fail with EPERM. The builder has no
 # user namespace remapping and its virtiofs has no immutable flag, so a
@@ -474,6 +525,10 @@ check_fpm_upload "${prev_upgrade_container}"
     || fail "startup did not fix the changeable directory around the root-owned file"
 docker logs "${prev_upgrade_container}" 2>&1 | grep -F "Left unchanged: " | grep -F "${root_owned_rel}" \
     || fail "startup did not log the root-owned file it could not change"
+docker exec "${prev_upgrade_container}" test -d "${wp_path}/${wp_cli_created_rel}" \
+    || fail "setup's wp core update-db did not load the must-use plugin fixture"
+check_owned_by_app_user "${prev_upgrade_container}" "${root_owned_rel}"
+check_app_user_upload "${prev_upgrade_container}"
 # On a restart wordpress-setup, not the entrypoint, re-owns the WordPress root.
 docker exec "${prev_upgrade_container}" sh -c \
     "touch '${wp_path}/wp-content/uploads/gate-restart-owner' && chown 0:0 '${wp_path}/wp-content/uploads/gate-restart-owner'"
